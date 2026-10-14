@@ -1,3 +1,14 @@
+# SUPERSEDED - use ../docker-compose.yml instead.
+#
+# This is the project's original Kafka-only stack. It no longer starts on
+# current Docker Desktop: confluentinc/cp-zookeeper:7.3.0 dies at boot with
+# 'Exception thrown by the agent : java.lang.NullPointerException' from the
+# JDK's local JMX management agent.
+#
+# docker-compose.yml at the repo root replaces this with a single Kafka 3.9
+# broker in KRaft mode (no Zookeeper at all) plus MongoDB and the three
+# application services. Kept here only for reference.
+
 version: '2.1'
 
 services:

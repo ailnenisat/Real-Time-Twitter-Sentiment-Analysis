@@ -21,12 +21,19 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-qkl0cdk^3k(_)oc(gx#obz(g8)t#40t)6)8%c!%2c(0nl4b)&#'
+SECRET_KEY = os.getenv(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-qkl0cdk^3k(_)oc(gx#obz(g8)t#40t)6)8%c!%2c(0nl4b)&#',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() in ('1', 'true', 'yes')
 
-ALLOWED_HOSTS = []
+# Comma-separated list; the defaults cover `runserver` on the host and the
+# container's own hostname when the dashboard runs under docker-compose.
+ALLOWED_HOSTS = os.getenv(
+    'DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1,0.0.0.0,[::1]'
+).split(',')
 
 
 # Application definition
@@ -82,30 +89,9 @@ DATABASES = {
     }
 }
 
-# """ DATABASES = {
-#     'default': {
-#         'ENGINE': 'djongo',
-#         'NAME': 'bigdata_project',
-#         # 'ENFORCE_SCHEMA': False,
-#         # 'CLIENT': {
-#         #     'host': 'mongodb://localhost:27017' 
-#         # }
-#     }
-# } """
-
-# DATABASES = {
-#     'default': {
-#         'ENGINE': '',
-#         'NAME': 'bigdata_project',
-#         'HOST': 'mongodb://localhost',
-#         'PORT': 27017,
-#     }
-# }
-
-# import mongoengine
-# mongoengine.connect(db='bigdata_project', host='mongodb://localhost:27017/bigdata_project')
-
-
+# NOTE: this SQLite database is only used by Django's own tables
+# (admin, sessions, auth). The tweet predictions live in MongoDB and are
+# read with PyMongo in dashboard/views.py - see MONGO_URI there.
 
 # Password validation
 # https://docs.djangoproject.com/en/5.0/ref/settings/#auth-password-validators

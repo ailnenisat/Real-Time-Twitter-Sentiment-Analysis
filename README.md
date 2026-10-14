@@ -62,121 +62,123 @@ best used after a review step adds one of those sentiment labels.
 - **Django-Dashboard** : this folder contains Dashboard Django Application
 - **Kafka-PySpark** : this folder contains kafka provider and pyspark streaming (kafka consumer).
 - **ML PySpark Model** : this folder contains the trained model with jupyter notebook and datasets.
-- **zk-single-kafka-single.yml** : Download and install Apache Kafka in docker.
+- **docker-compose.yml** : the full stack (Kafka, MongoDB, producer, consumer, dashboard).
+- **docker/Dockerfile** : shared Python 3.11 + JDK 17 image for the three Python services.
+- **zk-single-kafka-single.yml** : the original Kafka-only stack, superseded by `docker-compose.yml`.
 - **bigdataproject rapport** : a brief report about the project (in french).
 
 
 ## Getting Started
 
+The whole stack runs with Docker Compose. This is the recommended path on every
+OS, and the only practical one on Windows: PySpark needs a JVM plus Hadoop's
+native `winutils.exe` / `hadoop.dll` binaries to read files from a Windows disk,
+and the containers sidestep that entirely by running on Linux with a real JDK 17.
+
 ### Prerequisites
 
-To run this project, you will need the following installed on your system:
+- **Docker Desktop** (the only hard requirement - it provides Kafka, MongoDB,
+  Java and Python)
+- Optionally **MongoDB Compass** to browse the stored predictions; the stack
+  publishes MongoDB on `localhost:27017`.
 
-- Docker (for runing Kafka)
-- Python 3.x
-- Apache Kafka
-- Apache Spark (PySpark for python)
-- MongoDB
-- Django
+### Run everything
 
-### Installation
+```bash
+docker compose up -d --build
+```
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/drisskhattabi6/Real-Time-Twitter-Sentiment-Analysis.git
-   cd Real-Time-Twitter-Sentiment-Analysis
-   ```
-   
-2. **Installing Docker Desktop**
+That starts five services:
 
-3. **Set up Kafka**:
-   - Download and install Apache Kafka in docker using :
-   ```bash
-   docker-compose -f zk-single-kafka-single.yml up -d
-   ```
+| Service     | What it does                                                        | Port   |
+|-------------|---------------------------------------------------------------------|--------|
+| `kafka1`    | Kafka 3.9 broker in KRaft mode (no Zookeeper)                        | 9092   |
+| `mongo`     | MongoDB 7, stores the classified tweets                              | 27017  |
+| `producer`  | Replays `twitter_validation.csv` into the `twitter` topic            | -      |
+| `consumer`  | Spark ML pipeline: reads Kafka, classifies, writes to MongoDB        | -      |
+| `dashboard` | Django site: live dashboard + the `/classify` page                   | 8000   |
 
-5. **Set up MongoDB**:
-   - Download and install MongoDB.
-     - It is recommended to install also **MongoDBCompass** to visualize data and makes working with mongodb easier.
+Then open **http://127.0.0.1:8000**. The first build takes a few minutes
+(PySpark is a ~320 MB download); afterwards startup is seconds.
 
-6. **Install Python dependencies**:
-   - To install pySpark - PyMongo - Django ...
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Watch it work
 
-### Running the Project
+```bash
+docker compose logs -f consumer     # tweets being classified in real time
+docker compose logs -f producer     # tweets being pushed into Kafka
+```
 
-   Note : you will need MongoDB for Running the Kafka and Spark Streaming application and for Running Django Dashboard application.
-   
-   - **Start MongoDB**:
-      - using command line :
-      ```bash
-      sudo systemctl start mongod
-      ```
-      - then use **MongoDBCompass** (Recommended).
+Check what landed in MongoDB:
 
-#### Running the Kafka and Spark Streaming application :
+```bash
+docker exec mongo mongosh --quiet --eval   'db.getSiblingDB("bigdata_project").tweets.countDocuments()'
+```
 
-1. **Change the directory to the application**:
-   ```bash
-   cd Kafka-PySpark
-   ```
+### Useful commands
 
-2. **Start Kafka in docker**:
-   - using command line :
-   ```bash
-   docker exec -it <kafka-container-id> /bin/bash
-   ```
-   - or using docker desktop :
-     
-     ![ docker desktop img](imgs/img5.png)
+```bash
+docker compose ps                   # service health
+docker compose restart producer     # replay the CSV from the top
+docker compose down                 # stop, keep the data
+docker compose down -v              # stop and wipe MongoDB + Kafka volumes
+```
 
-4. **Run kafka Zookeeper and a Broker**:
-   ```bash
-   kafka-topics --create --topic twitter --bootstrap-server localhost:9092
-   kafka-topics --describe --topic twitter --bootstrap-server localhost:9092
-   ```
+The producer sends one tweet every 3 seconds by default. To speed up a demo:
 
-5. **Run kafka provider app**:
-   ```bash
-   py producer-validation-tweets.py
-   ```
+```bash
+PRODUCER_DELAY=0.2 docker compose up -d producer
+```
 
-6. **Run pyspark streaming (kafka consumer) app**:
-   ```bash
-   py consumer-pyspark.py
-   ```
+### Configuration
 
-![Running the Kafka and Spark Streaming application img](imgs/img6.png)
+Every service reads its settings from environment variables, with defaults that
+also work when running the scripts directly on the host:
 
-this is an img of the MongoDBCompass after Running the Kafka and Spark Streaming application :
+| Variable                  | Default                      | Used by            |
+|---------------------------|------------------------------|--------------------|
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092`             | producer, consumer |
+| `KAFKA_TOPIC`             | `twitter`                    | producer, consumer |
+| `MONGO_URI`               | `mongodb://localhost:27017/` | consumer, dashboard|
+| `MODEL_PATH`              | model next to the script     | consumer, dashboard|
+| `PRODUCER_DELAY`          | `3`                          | producer           |
+| `DJANGO_ALLOWED_HOSTS`    | `localhost,127.0.0.1,...`    | dashboard          |
+| `DASHBOARD_TABLE_LIMIT`   | `200`                        | dashboard          |
+| `DASHBOARD_PLOT_LIMIT`    | `500`                        | dashboard          |
 
-![MongoDBCompass img](imgs/img4.png)
+The dashboard table shows the most recent `DASHBOARD_TABLE_LIMIT` tweets and the
+word-frequency plot samples the most recent `DASHBOARD_PLOT_LIMIT`, so the page
+stays fast however long the consumer has been running. The totals and the
+percentages per class are aggregated inside MongoDB and always cover the whole
+collection.
 
-#### Running Django Dashboard application :
+### Running without Docker (optional)
 
-1. **Change the directory to the application**:
-   ```bash
-   cd Django-Dashboard
-   ```
+The Python scripts work on the host too, as long as Kafka and MongoDB are
+reachable and a JDK is installed:
 
-2. **Creating static folder**:
-   ```bash
-   python manage.py collectstatic
-   ```
+```bash
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+docker compose up -d kafka1 mongo        # just the infrastructure
 
-3. **Run the Django server**:
-   ```bash
-   python manage.py runserver
-   ```
+cd Kafka-PySpark && python producer-validation-tweets.py   # terminal 1
+cd Kafka-PySpark && python consumer-pyspark.py             # terminal 2
+cd Django-Dashboard && python manage.py migrate && python manage.py runserver
+```
 
-4. **Access the Dashboard**:
-   Open your web browser and go to `http://127.0.0.1:8000` to view the real-time sentiment analysis dashboard.
+> **Windows note:** anything that touches Spark (`consumer-pyspark.py` and the
+> `/classify` page) additionally needs `winutils.exe` + `hadoop.dll` for
+> Hadoop 3.3 on `HADOOP_HOME`, otherwise Spark fails with
+> `UnsatisfiedLinkError: NativeIO$Windows.access0`. Running those two in Docker
+> avoids the problem.
 
-![the Dashboard](imgs/img2.png)
+### Troubleshooting
 
-![Running the Dashboard](imgs/img3.png)
+| Symptom | Cause / fix |
+|---|---|
+| `UnsatisfiedLinkError: NativeIO$Windows.access0` | Spark on Windows without winutils - use Docker. |
+| `UnsupportedClassVersionError` / Spark won't start | PySpark 4.x needs Java 17+. This project pins PySpark 3.5.x to match the saved model. |
+| Dashboard says "the DB is Empty!!" | The consumer hasn't written anything yet; check `docker compose logs consumer`. |
+| `zoo1` exits with a `NullPointerException` | The old `zk-single-kafka-single.yml` stack; use `docker-compose.yml` (KRaft, no Zookeeper). |
 
 ## More informations : 
 

@@ -1,0 +1,130 @@
+# Full stack for the Real-Time Twitter Sentiment Analysis project.
+#
+#   docker compose up -d --build      start everything
+#   docker compose logs -f consumer   watch tweets being classified
+#   docker compose down               stop everything (data is kept)
+#   docker compose down -v            stop and wipe MongoDB + Kafka data
+#
+# Dashboard: http://localhost:8000
+
+services:
+  # ---------------------------------------------------------------- Kafka ---
+  # Kafka 3.9 in KRaft mode: the broker manages its own metadata quorum, so no
+  # Zookeeper container is needed. (The older confluentinc/cp-zookeeper:7.3.0
+  # image crashes on current Docker Desktop with a JDK JMX-agent
+  # NullPointerException, which is why this stack uses KRaft instead.)
+  kafka1:
+    image: apache/kafka:3.9.0
+    hostname: kafka1
+    container_name: kafka1
+    ports:
+      # 19092 is used between containers; 9092 is published for host tools
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # CONTROLLER binds the routable hostname, not 0.0.0.0: KRaft derives the
+      # controller's advertised endpoint from this and rejects a meta-address.
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:19092,EXTERNAL://0.0.0.0:9092,CONTROLLER://kafka1:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka1:19092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka1:9093
+      # Single-node cluster: one replica of everything.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # The producer/consumer create the "twitter" topic on first use.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # The image defaults log.dirs to /tmp, which would not survive a restart.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "kafka1:19092"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  # -------------------------------------------------------------- MongoDB ---
+  mongo:
+    image: mongo:7
+    hostname: mongo
+    container_name: mongo
+    ports:
+      # exposed so MongoDB Compass on the host can connect to localhost:27017
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ------------------------------------------------- Application services ---
+  # Streams the validation CSV into Kafka, one tweet every PRODUCER_DELAY secs.
+  producer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: producer
+    working_dir: /app/Kafka-PySpark
+    command: python producer-validation-tweets.py
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka1:19092
+      KAFKA_TOPIC: twitter
+      PRODUCER_DELAY: "${PRODUCER_DELAY:-3}"
+    volumes:
+      - .:/app
+    depends_on:
+      kafka1:
+        condition: service_healthy
+
+  # Reads from Kafka, classifies with the Spark ML pipeline, writes to MongoDB.
+  consumer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: consumer
+    working_dir: /app/Kafka-PySpark
+    command: python consumer-pyspark.py
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka1:19092
+      KAFKA_TOPIC: twitter
+      MONGO_URI: mongodb://mongo:27017/
+    volumes:
+      - .:/app
+    depends_on:
+      kafka1:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+
+  # Django dashboard + the /classify page (also runs Spark, lazily).
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: dashboard
+    working_dir: /app/Django-Dashboard
+    # --noreload: the autoreloader would start a second JVM for Spark.
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8000 --noreload"
+    environment:
+      MONGO_URI: mongodb://mongo:27017/
+      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1,0.0.0.0,dashboard"
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+volumes:
+  mongo-data:
+  kafka-data:

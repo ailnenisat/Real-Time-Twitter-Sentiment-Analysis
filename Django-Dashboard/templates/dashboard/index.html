@@ -36,6 +36,14 @@
 
         <h2>Data Visualization</h2>
 
+        {% if shown_count < len_data %}
+        <p style="font-size: 16px;">
+            Showing the <mark>{{ shown_count }}</mark> most recent tweets
+            of <mark>{{ len_data }}</mark> total &mdash; the statistics below
+            cover all of them.
+        </p>
+        {% endif %}
+
         <div class="table_container flex-ctr-str">
             <table>
                 <thead>
@@ -79,6 +87,9 @@
             <hr width="75%" color="black" />
             <div class="display-two flex-center" style="flex-direction: column; height: 650px;">
                     <h3>Top Word Frequencies for each class</h3>
+                    {% if plot_sample_size < len_data %}
+                    <p style="font-size: 14px;">(from the {{ plot_sample_size }} most recent tweets)</p>
+                    {% endif %}
                     <img src="{% static 'imgs/Word_Frequencies_for_all_classes.png' %}" alt="Word_Frequencies_for_all_classes">
             </div>
         </div>
@@ -99,8 +110,13 @@
 <script src="{% static 'js/script.js' %}"></script>
 
 
+{{ sentiment_counts|json_script:"sentiment-counts" }}
 <script>
-    var expenses = {{ sentiment_counts|safe }}
+    // Read the counts through json_script: it emits valid, properly escaped
+    // JSON. Interpolating the dict straight into JS broke the page whenever
+    // the database was empty (the variable rendered as nothing at all).
+    var el = document.getElementById('sentiment-counts');
+    var expenses = el ? JSON.parse(el.textContent) : {};
 
     console.log("Expenses:", expenses); 
 
@@ -128,12 +144,15 @@
         }
     };
     
-    var ctx = document.getElementById('myChart1').getContext('2d');
-    var myPieChart = new Chart(ctx, {
-        type: 'pie',
-        data: data,
-        options: options
-    });
+    // The canvas is only rendered when there is data to show.
+    var canvas = document.getElementById('myChart1');
+    if (canvas) {
+        new Chart(canvas.getContext('2d'), {
+            type: 'pie',
+            data: data,
+            options: options
+        });
+    }
 
 
 </script>
