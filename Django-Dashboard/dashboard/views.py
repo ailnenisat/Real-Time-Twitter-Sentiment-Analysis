@@ -1,14 +1,14 @@
 import os
 import re
 from collections import Counter
+from datetime import timedelta
 
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend (no GUI in a web server)
-import matplotlib.pyplot as plt
 import nltk
-import pandas as pd
+from django.http import JsonResponse
 from django.shortcuts import render
+from django.views.decorators.http import require_GET
 from pymongo import MongoClient
+from pymongo.errors import PyMongoError
 
 # -----------------------------------------------------
 # NLTK data
@@ -43,7 +43,9 @@ def tokenize(text):
 # -----------------------------------------------------
 
 MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/')
-client = MongoClient(MONGO_URI)
+# A short selection timeout keeps the page (and the live polling) responsive
+# with a clear error when MongoDB is down, instead of hanging for 30 seconds.
+client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
 db = client['bigdata_project']
 
 # -----------------------------------------------------
@@ -70,113 +72,149 @@ class_list = ['Negative', 'Positive', 'Neutral', 'Irrelevant']
 
 # The collection grows without bound while the consumer runs, so the dashboard
 # never reads all of it: the table shows the most recent TABLE_LIMIT tweets and
-# the word-frequency plot is built from at most PLOT_SAMPLE_LIMIT of them.
+# the word and trend charts are built from at most PLOT_SAMPLE_LIMIT of them.
 # The totals, counts and percentages are still computed over the whole
 # collection - they are aggregated inside MongoDB rather than in Python.
 TABLE_LIMIT = int(os.getenv('DASHBOARD_TABLE_LIMIT', '200'))
 PLOT_SAMPLE_LIMIT = int(os.getenv('DASHBOARD_PLOT_LIMIT', '500'))
 
+TOP_WORDS_PER_CLASS = 5
+TREND_MINUTES = 15
 
-_last_plot_key = None
+# Tokenising the sample costs real time, and the live page asks for fresh stats
+# every few seconds, so the word counts are only recomputed when the number of
+# stored tweets has changed.
+_top_words_cache = {'key': None, 'value': None}
 
 
-def plot_word_frequencies_per_class(data, cache_key=None):
-    """Render the 'top words per sentiment class' bar chart into the static dir.
+def top_words_per_class(sample, cache_key):
+    if cache_key is not None and _top_words_cache['key'] == cache_key:
+        return _top_words_cache['value']
 
-    Tokenising the sample and rendering the figure costs real time, so the work
-    is skipped when `cache_key` shows nothing has changed since the last render
-    and the PNG is still on disk.
-    """
-    global _last_plot_key
-
-    static_folder = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), 'BigDataProject', 'static', 'imgs'
-    )
-    # The folder is not in version control on a fresh clone, and savefig would
-    # fail with FileNotFoundError rather than creating it.
-    os.makedirs(static_folder, exist_ok=True)
-    plot_path = os.path.join(static_folder, 'Word_Frequencies_for_all_classes.png')
-
-    if cache_key is not None and cache_key == _last_plot_key and os.path.exists(plot_path):
-        return
-
-    all_words_per_class = {class_label: [] for class_label in class_list}
-    color_map = {'Negative': 'red', 'Positive': 'blue', 'Neutral': 'green', 'Irrelevant': 'purple'}
-
-    for entry in data:
+    words_per_class = {label: [] for label in class_list}
+    for entry in sample:
         prediction = entry.get('prediction')
         tweet = entry.get('tweet')
         # Skip documents with an unexpected or missing label instead of
-        # raising KeyError and taking the whole dashboard down.
-        if prediction not in all_words_per_class or not tweet:
+        # raising KeyError and taking the dashboard down.
+        if prediction not in words_per_class or not tweet:
             continue
-        all_words_per_class[prediction].extend(preprocess_text(tweet))
+        words_per_class[prediction].extend(preprocess_text(tweet))
 
-    plt.figure(figsize=(12, 8))
-    plotted = False
+    result = {
+        label: [{'word': word, 'count': count}
+                for word, count in Counter(words).most_common(TOP_WORDS_PER_CLASS)]
+        for label, words in words_per_class.items()
+    }
+    _top_words_cache.update(key=cache_key, value=result)
+    return result
 
-    for class_label, class_words in all_words_per_class.items():
-        if not class_words:
-            continue
-        top_words = dict(Counter(class_words).most_common(5))
-        df = pd.DataFrame(list(top_words.items()), columns=['Word', 'Frequency'])
-        plt.bar(df['Word'] + f' ({class_label})', df['Frequency'],
-                color=color_map[class_label], alpha=0.7, label=class_label)
-        plotted = True
 
-    plt.xlabel('Words')
-    plt.ylabel('Frequency')
-    if plotted:
-        plt.legend()
-    plt.xticks(rotation=70)
-    plt.tight_layout()
+def received_at(doc):
+    """When the consumer stored the tweet; MongoDB encodes it in the ObjectId."""
+    stamp = getattr(doc.get('_id'), 'generation_time', None)
+    return stamp
 
-    plt.savefig(plot_path)
-    plt.close()  # release the figure; otherwise every request leaks one
-    _last_plot_key = cache_key
 
-# -----------------------------------------------------
+def trend_per_minute(sample):
+    """Tweets per minute and class over the last TREND_MINUTES minutes of data.
 
-def dashboard(request):
+    The window ends at the newest stored tweet rather than at "now", so the
+    chart still shows something sensible after the stream has been stopped.
+    """
+    stamped = [(received_at(doc), doc.get('prediction')) for doc in sample]
+    stamped = [(when, label) for when, label in stamped if when is not None]
+    if not stamped:
+        return {'starts': [], 'series': {label: [] for label in class_list}}
+
+    newest = max(when for when, _ in stamped).replace(second=0, microsecond=0)
+    starts = [newest - timedelta(minutes=offset)
+              for offset in range(TREND_MINUTES - 1, -1, -1)]
+    series = {label: [0] * TREND_MINUTES for label in class_list}
+    for when, label in stamped:
+        slot = TREND_MINUTES - 1 - int((newest - when.replace(second=0, microsecond=0))
+                                       .total_seconds() // 60)
+        if label in series and 0 <= slot < TREND_MINUTES:
+            series[label][slot] += 1
+    return {'starts': [start.isoformat() for start in starts], 'series': series}
+
+
+def collect_stats():
+    """Everything the dashboard shows, as plain JSON-serialisable data.
+
+    Used both for the first render of the page and by the live /api/stats/
+    endpoint, so the two can never disagree.
+    """
     # count_documents is a server-side count: no documents cross the wire.
-    len_data = db.tweets.count_documents({})
-    print("len_data : ", len_data)
+    total = db.tweets.count_documents({})
 
-    if len_data == 0:
-        return render(request, 'dashboard/index.html', {'len_data': len_data})
-
+    counts = {label: 0 for label in class_list}
     # Group by label inside MongoDB instead of pulling every document into
     # Python just to tally it.
-    sentiment_counts = {label: 0 for label in class_list}
     for row in db.tweets.aggregate([{'$group': {'_id': '$prediction', 'n': {'$sum': 1}}}]):
-        if row['_id'] in sentiment_counts:
-            sentiment_counts[row['_id']] = row['n']
+        if row['_id'] in counts:
+            counts[row['_id']] = row['n']
 
-    # Calculate the rate of each class
-    sentiment_rates = {label: round((count / len_data) * 100, 2)
-                       for label, count in sentiment_counts.items()}
+    rates = {label: (round(count / total * 100, 1) if total else 0.0)
+             for label, count in counts.items()}
 
-    # One bounded query serves both the table and the plot. Sorting by _id
+    # One bounded query serves the table and the charts. Sorting by _id
     # descending gives newest-first, since ObjectIds increase with insertion.
     recent = list(
         db.tweets.find()
         .sort('_id', -1)
         .limit(max(TABLE_LIMIT, PLOT_SAMPLE_LIMIT))
     )
-    data = recent[:TABLE_LIMIT]
-    plot_sample = recent[:PLOT_SAMPLE_LIMIT]
+    sample = recent[:PLOT_SAMPLE_LIMIT]
 
-    plot_word_frequencies_per_class(plot_sample, cache_key=len_data)
+    tweets = []
+    for doc in recent[:TABLE_LIMIT]:
+        when = received_at(doc)
+        tweets.append({
+            'id': str(doc.get('_id')),
+            'tweet': doc.get('tweet') or '',
+            'prediction': doc.get('prediction') or '',
+            'received': when.isoformat() if when else None,
+        })
 
-    context = {
-        'data': data,
-        'len_data': len_data,
-        'shown_count': len(data),
-        'plot_sample_size': len(plot_sample),
-        'sentiment_rates': sentiment_rates,
-        'sentiment_counts': sentiment_counts,
+    return {
+        'total': total,
+        'counts': counts,
+        'rates': rates,
+        'tweets': tweets,
+        'table_limit': TABLE_LIMIT,
+        'sample_size': len(sample),
+        'top_words': top_words_per_class(sample, cache_key=total) if total else
+                     {label: [] for label in class_list},
+        'trend': trend_per_minute(sample),
+        'labels': class_list,
     }
-    return render(request, 'dashboard/index.html', context)
+
+# -----------------------------------------------------
+
+def dashboard(request):
+    try:
+        stats = collect_stats()
+        error = ''
+    except PyMongoError:
+        stats = None
+        error = 'Cannot reach MongoDB. Check that it is running, then reload.'
+    return render(request, 'dashboard/index.html', {'stats': stats, 'error': error})
+
+
+@require_GET
+def api_stats(request):
+    """Live data for the dashboard; polled by static/js/dashboard.js."""
+    try:
+        response = JsonResponse(collect_stats())
+    except PyMongoError:
+        return JsonResponse({'error': 'Cannot reach MongoDB.'}, status=503)
+    response['Cache-Control'] = 'no-store'
+    return response
+
+
+def wants_json(request):
+    return request.headers.get('X-Requested-With') == 'XMLHttpRequest'
 
 
 def classify(request):
@@ -198,7 +236,13 @@ def classify(request):
                 error_text = f"Could not classify the text: {exc}"
         else:
             error = True
-            error_text = "the Text is empty!! PLZ Enter Your Text."
+            error_text = "Enter some text to classify."
+
+        if wants_json(request):
+            if error:
+                status = 400 if not text.strip() else 500
+                return JsonResponse({'error': error_text}, status=status)
+            return JsonResponse({'prediction': str(prediction), 'text': text.strip()})
 
     context = {
         "error": error,

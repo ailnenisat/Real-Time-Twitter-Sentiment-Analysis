@@ -1,0 +1,34 @@
+<section class="classify-panel" aria-labelledby="classify-title" data-classify-panel>
+    <div class="classify-head">
+        <h2 id="classify-title">Classify text</h2>
+        <p>Run any text through the same PySpark model that classifies the live stream.</p>
+    </div>
+
+    <div class="classify-grid">
+        <form method="post" action="{% url 'classify' %}" data-classify-form novalidate>
+            {% csrf_token %}
+            <label class="sr-only" for="classify-text">Text to classify</label>
+            <textarea id="classify-text" name="text" rows="4" maxlength="1000" placeholder="Paste or type a tweet">{{ text }}</textarea>
+            <div class="field-meta">
+                <span><span data-char-count>{{ text|length }}</span> / 1000</span>
+                <span>Ctrl + Enter to classify</span>
+            </div>
+            <button type="submit" class="btn btn-primary" data-classify-button>
+                <span class="spinner" aria-hidden="true"></span>
+                <span data-classify-label>Classify</span>
+            </button>
+        </form>
+
+        <div class="classify-side">
+            <div class="result" data-classify-result aria-live="polite">{% if error %}<div class="result-card is-error">{{ error_text }}</div>{% elif text_len %}<div class="result-card" data-sentiment="{{ prediction }}"><div class="result-eyebrow">Predicted sentiment</div><div class="result-value">{{ prediction }}</div></div>{% endif %}</div>
+
+            <h3 class="panel-subtitle">Try a sample</h3>
+            <div class="samples">
+                <button type="button" class="sample" data-sample="Terrible service again today, I want a refund.">Terrible service again today</button>
+                <button type="button" class="sample" data-sample="The new update is fantastic, battery life is so much better!">Fantastic update, better battery</button>
+                <button type="button" class="sample" data-sample="Just landed in Berlin, heading to the hotel.">Just landed in Berlin</button>
+                <button type="button" class="sample" data-sample="Check out my new playlist and follow me for more!">Check out my new playlist</button>
+            </div>
+        </div>
+    </div>
+</section>

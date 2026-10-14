@@ -1,159 +1,106 @@
 {% extends 'base.html' %}
 {% load static %}
 
-{% block title %} Big Data Project {% endblock title %}
-
-
-{% block links %}
-    <!-- <link rel="stylesheet" href="{% static 'css/css-reset.css' %}"> -->
-    <!-- <link rel="stylesheet" href="{% static 'css/normalize.css' %}"> -->
-    <link rel="stylesheet" href="{% static 'css/myCss-fm.css' %}">
-    <link rel="stylesheet" href="{% static 'css/style.css' %}">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.0/chart.min.js"></script>
-{% endblock links %}
-
+{% block title %}Dashboard · Sentiment Hub{% endblock title %}
 
 {% block content %}
 
-<header>
-    <div class="container flex-sp-bet">
-        <a href="{% url 'dashboard' %}">
-            <h2 class="logo">Dashboard</h2>
-        </a>
-        <nav class="nav">
-            <ul>
-                <li><a href="{% url 'dashboard' %}"><i class="fa-solid fa-house"></i> Dashboard</a></li>
-                <li><a href="{% url 'classify' %}"><i class="fa-solid fa-user-pen"></i> Classify</a></li>
-            </ul>
-        </nav>
+<header class="topbar">
+    <h1>Sentiment report</h1>
+    <div class="live-pill" data-live-pill data-state="connecting" role="status">
+        <span class="live-dot" aria-hidden="true"></span>
+        <span data-live-text>Connecting…</span>
     </div>
 </header>
 
-<main class="flex-ctr-clm">
-    <div class="flex-ctr-clm">
+<div class="filterbar" role="search">
+    <label class="field">
+        <span class="field-label">Sentiment</span>
+        <select data-filter-sentiment>
+            <option value="">All</option>
+            <option>Positive</option>
+            <option>Negative</option>
+            <option>Neutral</option>
+            <option>Irrelevant</option>
+        </select>
+    </label>
+    <label class="field field-grow">
+        <span class="field-label">Keyword</span>
+        <input type="search" data-filter-keyword placeholder="Search tweets…" autocomplete="off">
+    </label>
+    <label class="switch">
+        <input type="checkbox" data-auto-refresh checked>
+        <span class="switch-track" aria-hidden="true"></span>
+        <span>Auto-refresh (5s)</span>
+    </label>
+</div>
 
-        {% if len_data != 0 %}
+<div class="workspace">
+    <main class="report" id="report">
 
-        <h2>Data Visualization</h2>
-
-        {% if shown_count < len_data %}
-        <p style="font-size: 16px;">
-            Showing the <mark>{{ shown_count }}</mark> most recent tweets
-            of <mark>{{ len_data }}</mark> total &mdash; the statistics below
-            cover all of them.
-        </p>
-        {% endif %}
-
-        <div class="table_container flex-ctr-str">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Text</th>
-                        <th>Target</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for item in data %}
-                    <tr>
-                        <td>{{ item.tweet }}</td>
-                        <td>{{ item.prediction }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+        <div class="card classify-card">
+            {% include 'dashboard/_classify_panel.html' %}
         </div>
 
-        <hr width="75%" color="black" />
+        <div class="banner is-error" data-error-banner hidden role="alert"></div>
 
-        <h2>Data Statistics</h2>
-
-        <div class="stats_container flex-ctr-clm">
-
-            <p style="font-size: 20px; font-weight: 600;">Total Data : <mark>{{ len_data }} </mark></p>
-
-            <div class="display-two flex-center">
-                <div class="flex-ctr-clm">
-                    <canvas id="myChart1"></canvas>
-                </div>
-                <div class="flex-ctr-clm">
-                    <h2>Sentiment Rates per Class</h2>
-                    <ul>
-                        {% for label, rate in sentiment_rates.items %}
-                        <li style="font-size: 22px; font-weight: 600;"> {{ label }} : {{ rate }} %</li>
-                        {% endfor %}
-                    </ul>
-                </div>
-            </div>
-            <hr width="75%" color="black" />
-            <div class="display-two flex-center" style="flex-direction: column; height: 650px;">
-                    <h3>Top Word Frequencies for each class</h3>
-                    {% if plot_sample_size < len_data %}
-                    <p style="font-size: 14px;">(from the {{ plot_sample_size }} most recent tweets)</p>
-                    {% endif %}
-                    <img src="{% static 'imgs/Word_Frequencies_for_all_classes.png' %}" alt="Word_Frequencies_for_all_classes">
-            </div>
+        <div class="empty-state" data-empty-state hidden>
+            <h2>No tweets yet</h2>
+            <p>The stream hasn't stored any results. Start the producer and consumer — this page updates by itself as soon as the first tweet is classified.</p>
         </div>
-            
-        {% else %}
 
-        <h1><mark>the DB is Empty!!</mark> </h1>
+        <div data-report-body hidden>
+            <section class="kpis" aria-label="Summary" data-kpis></section>
 
-        {% endif %}
+            <div class="charts">
+                <section class="card">
+                    <h3 class="card-title">Share by sentiment</h3>
+                    <div data-chart-donut></div>
+                    <ul class="legend" data-legend></ul>
+                </section>
 
-    </div>
-</main>
+                <section class="card card-wide">
+                    <h3 class="card-title">Sentiment over time <span class="card-note">tweets per minute</span></h3>
+                    <div data-chart-trend></div>
+                    <ul class="legend" data-trend-legend></ul>
+                </section>
+
+                <section class="card">
+                    <h3 class="card-title">Top words <span class="card-note" data-words-note></span></h3>
+                    <div class="chips" role="tablist" aria-label="Sentiment class" data-words-tabs></div>
+                    <ol class="bars" data-words-list></ol>
+                </section>
+            </div>
+
+            <section class="card">
+                <div class="card-head">
+                    <h3 class="card-title">Tweet detail <span class="card-note" data-table-note></span></h3>
+                </div>
+                <div class="table-wrap">
+                    <table class="grid">
+                        <thead>
+                            <tr><th>Tweet</th><th>Sentiment</th><th>Received</th></tr>
+                        </thead>
+                        <tbody data-table-body></tbody>
+                    </table>
+                </div>
+                <div class="pager">
+                    <button type="button" class="btn btn-ghost" data-page-prev>Previous</button>
+                    <span data-page-info></span>
+                    <button type="button" class="btn btn-ghost" data-page-next>Next</button>
+                </div>
+            </section>
+        </div>
+    </main>
+
+</div>
 
 {% endblock content %}
 
-
 {% block scripts %}
-<script src="{% static 'js/script.js' %}"></script>
-
-
-{{ sentiment_counts|json_script:"sentiment-counts" }}
-<script>
-    // Read the counts through json_script: it emits valid, properly escaped
-    // JSON. Interpolating the dict straight into JS broke the page whenever
-    // the database was empty (the variable rendered as nothing at all).
-    var el = document.getElementById('sentiment-counts');
-    var expenses = el ? JSON.parse(el.textContent) : {};
-
-    console.log("Expenses:", expenses); 
-
-    var labels = Object.keys(expenses);
-    var amounts = Object.values(expenses);
-
-    var data = {
-        labels: labels,
-        datasets: [{
-            data: amounts,
-            backgroundColor: [
-                'rgba(255, 50, 50)',
-                'rgba(50, 200, 50)',
-                'rgba(50, 50, 200)',
-                'rgba(250, 250, 0)',
-            ]
-        }]
-    };
-
-    var options = {
-        plugins: {
-            legend: {
-                position: 'right' // Position legend at the bottom of the chart
-            }
-        }
-    };
-    
-    // The canvas is only rendered when there is data to show.
-    var canvas = document.getElementById('myChart1');
-    if (canvas) {
-        new Chart(canvas.getContext('2d'), {
-            type: 'pie',
-            data: data,
-            options: options
-        });
-    }
-
-
-</script>
+{% if stats %}{{ stats|json_script:"initial-stats" }}{% endif %}
+{{ error|json_script:"initial-error" }}
+<script>window.SENTIMENT_STATS_URL = "{% url 'api_stats' %}";</script>
+<script src="{% static 'js/dashboard.js' %}"></script>
+<script src="{% static 'js/classify.js' %}"></script>
 {% endblock scripts %}

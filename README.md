@@ -12,7 +12,7 @@ The project is built using the following components:
 - **Spark Streaming**: Processes the streaming data from Kafka to perform sentiment analysis.
 - **MongoDB**: Stores the processed sentiment data.
 - **Django**: Serves as the web framework for building a real-time dashboard to visualize the sentiment analysis results.
-- **chart.js** & **matplotlib** : for plotting.
+- **Inline SVG charts** : the dashboard draws its own charts (no external libraries, works offline) and refreshes itself from the `/api/stats/` endpoint every 5 seconds.
 
 - This is the project plan :
    ![project img](imgs/flow.png)
